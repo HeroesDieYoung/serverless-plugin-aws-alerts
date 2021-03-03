@@ -1,4 +1,5 @@
 const lambdaNamespace = 'AWS/Lambda';
+const apiGatewayNamespace = 'AWS/ApiGateway';
 
 module.exports = {
   functionInvocations: {
@@ -52,5 +53,31 @@ module.exports = {
     evaluationPeriods: 1,
     datapointsToAlarm: 1,
     comparisonOperator: 'GreaterThanOrEqualToThreshold',
+  },
+  '4XXErrors': {
+    namespace: apiGatewayNamespace,
+    enabled: true,
+    actionsEnabled: true,
+    type: 'static',
+    metric: '4XXError',
+    threshold: 1,
+    statistic: 'Sum',
+    period: 60,
+    evaluationPeriods: 1,
+    datapointsToAlarm: 1,
+    comparisonOperator: 'GreaterThanOrEqualToThreshold'
+  },
+  '5XXErrors': {
+    namespace: apiGatewayNamespace,
+    enabled: true,
+    actionsEnabled: true,
+    type: 'static',
+    metric: '5XXError',
+    threshold: 1,
+    statistic: 'Sum',
+    period: 60,
+    evaluationPeriods: 1,
+    datapointsToAlarm: 1,
+    comparisonOperator: 'GreaterThanOrEqualToThreshold'
   },
 };

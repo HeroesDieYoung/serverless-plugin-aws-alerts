@@ -11,8 +11,8 @@ class AlertsPlugin {
   constructor(serverless, options) {
     this.serverless = serverless;
     this.options = options;
-
     this.awsProvider = this.serverless.getProvider('aws');
+    console.log(serverless);
     this.providerNaming = this.awsProvider.naming;
     this.naming = new Naming();
     this.externalStack = new ExternalStack(serverless, options);
@@ -93,8 +93,8 @@ class AlertsPlugin {
     return this.getAlarms(alarms, definitions);
   }
 
-  getAlarmCloudFormation(alertTopics, definition, functionName, functionRef) {
-    if (!functionRef) {
+  getAlarmCloudFormation(alertTopics, definition, functionName, normalizedFunctionName, httpEvent) {
+    if (!normalizedFunctionName) {
       return;
     }
 
@@ -137,16 +137,19 @@ class AlertsPlugin {
     const namespace = definition.pattern ? stackName : definition.namespace;
 
     const metricId = definition.pattern
-      ? this.naming.getPatternMetricName(definition.metric, functionRef)
+      ? this.naming.getPatternMetricName(definition.metric, normalizedFunctionName)
       : definition.metric;
 
     const dimensions = definition.pattern
       ? []
       : this.naming.getDimensionsList(
-          definition.dimensions,
-          functionRef,
-          definition.omitDefaultDimension
-        );
+        stackName,
+        definition.namespace,
+        definition.dimensions,
+        normalizedFunctionName,
+        definition.omitDefaultDimension,
+        httpEvent
+      );
 
     const treatMissingData = definition.treatMissingData
       ? definition.treatMissingData
@@ -159,27 +162,34 @@ class AlertsPlugin {
       'Minimum',
       'Maximum',
     ];
-    let alarm;
+    let alarm = {
+      Type: 'AWS::CloudWatch::Alarm',
+      Properties: {
+        ActionsEnabled: definition.actionsEnabled,
+        AlarmDescription: definition.description,
+        EvaluationPeriods: definition.evaluationPeriods,
+        DatapointsToAlarm: definition.datapointsToAlarm,
+        ComparisonOperator: definition.comparisonOperator,
+        TreatMissingData: treatMissingData,
+        OKActions: okActions,
+        AlarmActions: alarmActions,
+        InsufficientDataActions: insufficientDataActions,
+      }
+    };
     if (definition.type === 'static') {
-      alarm = {
-        Type: 'AWS::CloudWatch::Alarm',
-        Properties: {
-          ActionsEnabled: definition.actionsEnabled,
-          Namespace: namespace,
-          MetricName: metricId,
-          AlarmDescription: definition.description,
-          Threshold: definition.threshold,
-          Period: definition.period,
-          EvaluationPeriods: definition.evaluationPeriods,
-          DatapointsToAlarm: definition.datapointsToAlarm,
-          ComparisonOperator: definition.comparisonOperator,
-          OKActions: okActions,
-          AlarmActions: alarmActions,
-          InsufficientDataActions: insufficientDataActions,
-          Dimensions: dimensions,
-          TreatMissingData: treatMissingData,
-        },
-      };
+      alarm = _.merge(
+        alarm,
+        {
+          Properties: {
+            Namespace: namespace,
+            MetricName: metricId,
+            Threshold: definition.threshold,
+            Period: definition.period,
+            Dimensions: dimensions,
+
+          }
+        }
+      );
 
       if (_.includes(statisticValues, definition.statistic)) {
         alarm.Properties.Statistic = definition.statistic;
@@ -189,42 +199,35 @@ class AlertsPlugin {
           definition.evaluateLowSampleCountPercentile;
       }
     } else if (definition.type === 'anomalyDetection') {
-      alarm = {
-        Type: 'AWS::CloudWatch::Alarm',
-        Properties: {
-          ActionsEnabled: definition.actionsEnabled,
-          AlarmDescription: definition.description,
-          EvaluationPeriods: definition.evaluationPeriods,
-          DatapointsToAlarm: definition.datapointsToAlarm,
-          ComparisonOperator: definition.comparisonOperator,
-          TreatMissingData: treatMissingData,
-          OKActions: okActions,
-          AlarmActions: alarmActions,
-          InsufficientDataActions: insufficientDataActions,
-          Metrics: [
-            {
-              Id: 'm1',
-              ReturnData: true,
-              MetricStat: {
-                Metric: {
-                  Namespace: namespace,
-                  MetricName: metricId,
-                  Dimensions: dimensions,
+      alarm = _.merge(
+        alarm,
+        {
+          Properties: {
+            Metrics: [
+              {
+                Id: 'm1',
+                ReturnData: true,
+                MetricStat: {
+                  Metric: {
+                    Namespace: namespace,
+                    MetricName: metricId,
+                    Dimensions: dimensions,
+                  },
+                  Period: definition.period,
+                  Stat: definition.statistic,
                 },
-                Period: definition.period,
-                Stat: definition.statistic,
               },
-            },
-            {
-              Id: 'ad1',
-              Expression: `ANOMALY_DETECTION_BAND(m1, ${definition.threshold})`,
-              Label: `${metricId} (expected)`,
-              ReturnData: true,
-            },
-          ],
-          ThresholdMetricId: 'ad1',
-        },
-      };
+              {
+                Id: 'ad1',
+                Expression: `ANOMALY_DETECTION_BAND(m1, ${definition.threshold})`,
+                Label: `${metricId} (expected)`,
+                ReturnData: true,
+              },
+            ],
+            ThresholdMetricId: 'ad1',
+          }
+        }
+      );
     } else {
       throw new Error(
         `Missing type for alarm ${alarm.name} on function ${functionName}, must be one of 'static' or 'anomalyDetection'`
@@ -235,7 +238,7 @@ class AlertsPlugin {
       alarm.Properties.AlarmName = this.naming.getAlarmName({
         template: definition.nameTemplate,
         prefixTemplate: definition.prefixTemplate,
-        functionLogicalId: functionRef,
+        functionLogicalId: normalizedFunctionName,
         metricName: definition.metric,
         metricId,
         functionName,
@@ -280,9 +283,8 @@ class AlertsPlugin {
           alertTopics[key] = topic;
         }
       } else {
-        const cfRef = `AwsAlerts${
-          customAlarmName ? _.upperFirst(customAlarmName) : ''
-        }${_.upperFirst(key)}`;
+        const cfRef = `AwsAlerts${customAlarmName ? _.upperFirst(customAlarmName) : ''
+          }${_.upperFirst(key)}`;
         if (customAlarmName) {
           if (!alertTopics[customAlarmName]) {
             alertTopics[customAlarmName] = {};
@@ -404,29 +406,68 @@ class AlertsPlugin {
       );
 
       const alarmStatements = alarms.reduce((statements, alarm) => {
-        const key = this.naming.getAlarmCloudFormationRef(
-          alarm.name,
-          functionName
-        );
-        if (alarm.enabled) {
-          const cf = this.getAlarmCloudFormation(
-            alertTopics,
-            alarm,
-            functionName,
-            normalizedFunctionName
-          );
 
-          statements[key] = cf;
+        if (alarm.namespace === 'AWS/ApiGateway') {
+          if (!!functionObj.events) {
+            const endpoints = functionObj.events
+              .filter((event) => !!event.http && !!event.http.method)
+              .reduce((endpoints, event) => {
+                const method = event.http.method.toUpperCase();
+                if (!endpoints[method]) {
+                  endpoints[method] = [];
+                }
+                endpoints[method].push(event);
+                return endpoints;
+              }, {});
 
-          const logMetricCF = this.getLogMetricCloudFormation(
-            alarm,
-            functionName,
-            normalizedFunctionName,
-            functionObj
-          );
-          _.merge(statements, logMetricCF);
+            Object.keys(endpoints).forEach((method) => {
+              const useIndices = endpoints[method].length > 1;
+              endpoints[method].forEach((e, i) => {
+                const key = this.naming.getAlarmCloudFormationRef(
+                  alarm.name,
+                  functionName,
+                  useIndices ? `${method}${i}` : method
+                );
+                if (alarm.enabled) {
+                  const cf = this.getAlarmCloudFormation(
+                    alertTopics,
+                    alarm,
+                    functionName,
+                    normalizedFunctionName,
+                    e
+                  );
+
+                  statements[key] = cf;
+                }
+              });
+            });
+          }
         } else {
-          delete statements[key];
+          const key = this.naming.getAlarmCloudFormationRef(
+            alarm.name,
+            functionName
+          );
+
+          if (alarm.enabled) {
+            const cf = this.getAlarmCloudFormation(
+              alertTopics,
+              alarm,
+              functionName,
+              normalizedFunctionName
+            );
+
+            statements[key] = cf;
+
+            const logMetricCF = this.getLogMetricCloudFormation(
+              alarm,
+              functionName,
+              normalizedFunctionName,
+              functionObj
+            );
+            _.merge(statements, logMetricCF);
+          } else {
+            delete statements[key];
+          }
         }
 
         return statements;

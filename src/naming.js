@@ -1,14 +1,16 @@
+const { get } = require('lodash');
 const _ = require('lodash');
 
 const getNormalisedName = (name) =>
-  `${_.upperFirst(name.replace(/-/g, 'Dash').replace(/_/g, 'Underscore'))}`;
+  `${_.upperFirst(name.replace(/-/g, 'Dash').replace(/_/g, 'Underscore'))}`.substring(0, 255);
 
 class Naming {
-  getAlarmCloudFormationRef(alarmName, prefix) {
+  getAlarmCloudFormationRef(alarmName, prefix, method) {
     const normalizePrefix = getNormalisedName(prefix);
     const normalizedName = getNormalisedName(alarmName);
+    const normalizedMethod = method ? getNormalisedName(method) : '';
 
-    return `${normalizePrefix}${normalizedName}Alarm`;
+    return `${normalizePrefix}${normalizedName}${normalizedMethod}Alarm`;
   }
 
   getLogMetricCloudFormationRef(normalizedName, alarmName) {
@@ -19,26 +21,65 @@ class Naming {
     return `${_.upperFirst(metricName)}${functionName}`;
   }
 
-  getDimensionsList(dimensionsList, funcRef, omitDefaultDimension) {
+  getDimensionsList(stackname, namespace, dimensionsList, funcRef, omitDefaultDimension, httpEvent) {
+    console.log(`getDimensionList event: ${JSON.stringify(httpEvent)}`);
+    console.log(`options=${JSON.stringify(this.options)}`);
     if (omitDefaultDimension) {
       return dimensionsList || [];
     }
 
-    const funcNameDimension = {
-      Name: 'FunctionName',
-      Value: {
-        Ref: funcRef,
-      },
-    };
+    let filteredDimensions;
+    if (namespace === 'AWS/ApiGateway') {
+      filteredDimensions = (dimensionsList || [])
+        .filter((dim) =>
+          dim.Name !== 'ApiName' &&
+          dim.Name !== 'Resource' &&
+          dim.Name !== 'Stage' &&
+          dim.Name !== 'Method'
+        );
 
-    const filteredDimensions = (dimensionsList || []).filter(
-      (dim) => dim.Name !== 'FunctionName'
-    );
-    filteredDimensions.push(funcNameDimension);
+      const apiNameDimension = {
+        Name: 'ApiName',
+        Value: stackname
+      };
+      filteredDimensions.push(apiNameDimension);
+
+      const resourceDimension = {
+        Name: 'Resource',
+        Value: httpEvent.http.path
+      };
+      filteredDimensions.push(resourceDimension);
+
+      const stageDimension = {
+        Name: 'Stage',
+        Value: this.options.stage
+      };
+      filteredDimensions.push(stageDimension);
+
+      const methodDimension = {
+        Name: 'Method',
+        Value: httpEvent.http.method
+      };
+      filteredDimensions.push(methodDimension);
+
+    } else {
+      const funcNameDimension = {
+        Name: 'FunctionName',
+        Value: {
+          Ref: funcRef,
+        },
+      };
+
+      filteredDimensions = (dimensionsList || []).filter(
+        (dim) => dim.Name !== 'FunctionName'
+      );
+      filteredDimensions.push(funcNameDimension);
+    }
     return filteredDimensions;
   }
 
   getAlarmName(options) {
+    console.log(`AlarmName options=${JSON.stringify(options)}`);
     const interpolatedTemplate = options.template
       .replace('$[functionName]', options.functionName)
       .replace('$[functionId]', options.functionLogicalId)
