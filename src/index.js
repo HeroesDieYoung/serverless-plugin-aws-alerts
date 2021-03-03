@@ -12,9 +12,8 @@ class AlertsPlugin {
     this.serverless = serverless;
     this.options = options;
     this.awsProvider = this.serverless.getProvider('aws');
-    console.log(serverless);
     this.providerNaming = this.awsProvider.naming;
-    this.naming = new Naming();
+    this.naming = new Naming(this.awsProvider);
     this.externalStack = new ExternalStack(serverless, options);
 
     this.hooks = {
@@ -143,7 +142,6 @@ class AlertsPlugin {
     const dimensions = definition.pattern
       ? []
       : this.naming.getDimensionsList(
-        stackName,
         definition.namespace,
         definition.dimensions,
         normalizedFunctionName,

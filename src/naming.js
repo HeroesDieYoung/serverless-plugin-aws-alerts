@@ -1,10 +1,13 @@
-const { get } = require('lodash');
 const _ = require('lodash');
 
 const getNormalisedName = (name) =>
   `${_.upperFirst(name.replace(/-/g, 'Dash').replace(/_/g, 'Underscore'))}`.substring(0, 255);
 
 class Naming {
+  constructor(awsProvider) {
+    this.awsProvider = awsProvider;
+    this.providerNaming = awsProvider.naming;
+  }
   getAlarmCloudFormationRef(alarmName, prefix, method) {
     const normalizePrefix = getNormalisedName(prefix);
     const normalizedName = getNormalisedName(alarmName);
@@ -21,9 +24,7 @@ class Naming {
     return `${_.upperFirst(metricName)}${functionName}`;
   }
 
-  getDimensionsList(stackname, namespace, dimensionsList, funcRef, omitDefaultDimension, httpEvent) {
-    console.log(`getDimensionList event: ${JSON.stringify(httpEvent)}`);
-    console.log(`options=${JSON.stringify(this.options)}`);
+  getDimensionsList(namespace, dimensionsList, funcRef, omitDefaultDimension, httpEvent) {
     if (omitDefaultDimension) {
       return dimensionsList || [];
     }
@@ -40,19 +41,19 @@ class Naming {
 
       const apiNameDimension = {
         Name: 'ApiName',
-        Value: stackname
+        Value: this.providerNaming.getApiGatewayName()
       };
       filteredDimensions.push(apiNameDimension);
 
       const resourceDimension = {
         Name: 'Resource',
-        Value: httpEvent.http.path
+        Value: `/${httpEvent.http.path}`
       };
       filteredDimensions.push(resourceDimension);
 
       const stageDimension = {
         Name: 'Stage',
-        Value: this.options.stage
+        Value: this.awsProvider.getStage()
       };
       filteredDimensions.push(stageDimension);
 
@@ -79,7 +80,6 @@ class Naming {
   }
 
   getAlarmName(options) {
-    console.log(`AlarmName options=${JSON.stringify(options)}`);
     const interpolatedTemplate = options.template
       .replace('$[functionName]', options.functionName)
       .replace('$[functionId]', options.functionLogicalId)
